@@ -251,9 +251,30 @@ def get_episode_rating(imdb_id, season, episode):
         }), 500
 
 # Para compatibilidad con Vercel
+from werkzeug.wrappers import Request
+
 def handler(request):
-    """Handler para Vercel"""
-    return app(request.environ, lambda *args: None)
+    """Handler para Vercel usando WSGI"""
+    environ = request.get_wsgi_environ()
+    response_data = []
+    
+    def start_response(status, headers):
+        response_data.append((status, headers))
+    
+    app_response = app(environ, start_response)
+    
+    if response_data:
+        status, headers = response_data[0]
+        return {
+            'statusCode': int(status.split()[0]),
+            'headers': dict(headers),
+            'body': b''.join(app_response).decode('utf-8')
+        }
+    
+    return app_response
+
+# Alias para Vercel
+app_handler = handler
 
 if __name__ == "__main__":
     # Para desarrollo local
