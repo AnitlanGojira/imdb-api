@@ -2,11 +2,13 @@ from flask import Flask, jsonify, request
 import requests
 import re
 import json
+import os
 
 app = Flask(__name__)
 
 # Configuración OMDb
-OMDB_API_KEY = "3007f6c2"
+# Leer desde variable de entorno para no exponer la key en repos públicos
+OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 OMDB_BASE_URL = "http://www.omdbapi.com"
 # Cabeceras por defecto para IMDb y timeout seguro (connect, read)
 DEFAULT_HEADERS = {
@@ -55,6 +57,10 @@ def health():
 def get_episode_id_from_omdb(imdb_id, season, episode):
     """Obtener episode ID específico de OMDb (fallback cuando no se encuentra en lista)"""
     try:
+        # Si no hay key configurada, no intentar OMDb
+        if not OMDB_API_KEY:
+            app.logger.warning("OMDb API key missing. Skipping OMDb lookup.")
+            return {"success": False}
         omdb_url = f"{OMDB_BASE_URL}?i={imdb_id}&Season={season}&Episode={episode}&apikey={OMDB_API_KEY}"
         
         response = requests.get(omdb_url, timeout=REQUEST_TIMEOUT)
