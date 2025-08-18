@@ -1,8 +1,20 @@
 from flask import Flask, jsonify, request
 import requests
 import re
+import json
 
 app = Flask(__name__)
+
+# Configuración OMDb
+OMDB_API_KEY = "3007f6c2"
+OMDB_BASE_URL = "http://www.omdbapi.com"
+# Cabeceras por defecto para IMDb y timeout seguro (connect, read)
+DEFAULT_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+}
+REQUEST_TIMEOUT = (4, 8)
 
 def format_imdb_id(imdb_id):
     """Formatear IMDb ID"""
@@ -26,7 +38,8 @@ def root():
         "platform": "vercel",
         "endpoints": [
             "GET /health",
-            "GET /imdb/<imdb_id>/season/<season>/episode/<episode>/rating"
+            "GET /imdb/<imdb_id>/season/<season>/episode/<episode>/rating",
+            "GET /imdb/<episode_id>/rating"
         ]
     })
 
@@ -39,109 +52,32 @@ def health():
         "message": "API funcionando correctamente"
     })
 
-def try_ajax_episodes(imdb_id, season, episode):
-    """Intentar obtener episodio usando el endpoint AJAX de IMDb con paginación inteligente"""
+def get_episode_id_from_omdb(imdb_id, season, episode):
+    """Obtener episode ID específico de OMDb (fallback cuando no se encuentra en lista)"""
     try:
-        # Para episodios altos, necesitamos calcular el rango correcto
-        # IMDb carga en bloques de ~50 episodios
-        start_index = max(0, ((episode - 1) // 50) * 50)
+        omdb_url = f"{OMDB_BASE_URL}?i={imdb_id}&Season={season}&Episode={episode}&apikey={OMDB_API_KEY}"
         
-        ajax_url = f"https://www.imdb.com/title/{imdb_id}/episodes/_ajax"
-        params = {
-            'season': season,
-            'start': start_index
-        }
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': f"https://www.imdb.com/title/{imdb_id}/episodes/?season={season}"
-        }
-        
-        response = requests.get(ajax_url, params=params, headers=headers, timeout=10)
+        response = requests.get(omdb_url, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
-            html = response.text
+            data = response.json()
             
-            # Buscar el episodio específico en la respuesta AJAX
-            # Patrones más flexibles para encontrar el episodio
-            episode_patterns = [
-                rf'S{season}\.E{episode}\s*∙\s*([^<]+)</div>.*?(\d+\.\d+)</span>.*?\(<!-- -->(\d+)<!-- -->\)',
-                rf'S{season}\.E{episode}[^>]*>([^<]+)<.*?(\d+\.\d+)</span>.*?\((\d+)\)',
-                rf'episode-{episode}.*?(\d+\.\d+)</span>.*?\((\d+)\)'
-            ]
-            
-            for pattern in episode_patterns:
-                match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
-                if match:
-                    if len(match.groups()) >= 3:
-                        title = match.group(1).strip()
-                        rating = float(match.group(2))
-                        votes = match.group(3)
-                    else:
-                        title = f"Episode {episode}"
-                        rating = float(match.group(1))
-                        votes = match.group(2)
-                    
-                    return {
-                        "title": title,
-                        "rating": rating,
-                        "votes": votes,
-                        "success": True,
-                        "method": "ajax"
-                    }
+            if data.get("Response") == "True" and data.get("imdbID"):
+                return {
+                    "success": True,
+                    "episode_id": data["imdbID"],
+                    "title": data.get("Title", f"Episode {episode}"),
+                    "method": "omdb_episode_id"
+                }
         
-        return None
+        return {"success": False}
     except Exception as e:
-        print(f"Error en AJAX: {e}")  # Para debugging
-        return None
+        print(f"Error en OMDb: {e}")
+        return {"success": False}
 
-def try_load_all_episodes(imdb_id, season, episode):
-    """Cargar todos los episodios usando el parámetro 'mode=all' de IMDb"""
-    try:
-        # IMDb tiene un parámetro para cargar todos los episodios de una vez
-        url = f"https://www.imdb.com/title/{imdb_id}/episodes/?season={season}&mode=all"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            html = response.text
-            
-            # Buscar el episodio específico con patrones más flexibles
-            episode_patterns = [
-                rf'S{season}\.E{episode}\s*∙\s*([^<]+)</div>.*?(\d+\.\d+)</span>.*?\(<!-- -->(\d+)<!-- -->\)',
-                rf'S{season}\.E{episode}[^>]*>([^<]+)<.*?(\d+\.\d+)</span>.*?\((\d+)\)',
-                rf'episode.*?{episode}.*?(\d+\.\d+)</span>.*?\((\d+)\)'
-            ]
-            
-            for pattern in episode_patterns:
-                match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
-                if match:
-                    if len(match.groups()) >= 3:
-                        title = match.group(1).strip()
-                        rating = float(match.group(2))
-                        votes = match.group(3)
-                    else:
-                        title = f"Episode {episode}"
-                        rating = float(match.group(1))
-                        votes = match.group(2)
-                    
-                    return {
-                        "title": title,
-                        "rating": rating,
-                        "votes": votes,
-                        "success": True,
-                        "method": "load_all"
-                    }
-        
-        return None
-    except Exception as e:
-        print(f"Error cargando todos los episodios: {e}")
-        return None
 
 @app.route('/imdb/<imdb_id>/season/<int:season>/episode/<int:episode>/rating')
 def get_episode_rating(imdb_id, season, episode):
-    """Obtener rating de episodio específico con múltiples estrategias"""
+    """Obtener rating de episodio específico"""
     
     # Validar ID
     if not validate_imdb_id(imdb_id):
@@ -157,43 +93,10 @@ def get_episode_rating(imdb_id, season, episode):
     formatted_id = format_imdb_id(imdb_id)
     
     try:
-        # Estrategia 1: Intentar endpoint AJAX con paginación inteligente (mejor para episodios altos)
-        ajax_result = try_ajax_episodes(formatted_id, season, episode)
-        if ajax_result and ajax_result["success"]:
-            return jsonify({
-                "imdb_id": formatted_id,
-                "season": season,
-                "episode": episode,
-                "rating": ajax_result["rating"],
-                "votes": ajax_result["votes"],
-                "title": ajax_result["title"],
-                "success": True,
-                "method": ajax_result["method"],
-                "error": None
-            })
-        
-        # Estrategia 2: Cargar todos los episodios de una vez (para casos difíciles)
-        load_all_result = try_load_all_episodes(formatted_id, season, episode)
-        if load_all_result and load_all_result["success"]:
-            return jsonify({
-                "imdb_id": formatted_id,
-                "season": season,
-                "episode": episode,
-                "rating": load_all_result["rating"],
-                "votes": load_all_result["votes"],
-                "title": load_all_result["title"],
-                "success": True,
-                "method": load_all_result["method"],
-                "error": None
-            })
-        
-        # Estrategia 3: Método original (fallback para episodios tempranos)
+        # URL de episodios de la temporada específica
         url = f"https://www.imdb.com/title/{formatted_id}/episodes/?season={season}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
+        app.logger.info(f"GET season list: {formatted_id} S{season}E{episode}")
+        response = requests.get(url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
         if response.status_code != 200:
             return jsonify({
                 "imdb_id": formatted_id,
@@ -206,15 +109,23 @@ def get_episode_rating(imdb_id, season, episode):
         
         html = response.text
         
-        # Buscar el episodio específico
-        episode_pattern = rf'S{season}\.E{episode}\s*∙\s*([^<]+)</div>.*?(\d+\.\d+)</span>.*?\(<!-- -->(\d+)<!-- -->\)'
-        
-        match = re.search(episode_pattern, html, re.DOTALL)
-        if match:
-            title = match.group(1).strip()
-            rating = float(match.group(2))
-            votes = match.group(3)
-            
+        # Buscar el episodio específico anclando al enlace del episodio en la lista
+        # Enlaces de episodios usan el patrón ref_=ttep_ep_{episode}
+        # Después del enlace, aparecen: rating -> maxRating(10) -> voteCount
+        block_pattern = rf'ref_=ttep_ep_{episode}.*?ipc-rating-star--rating">(\d+\.\d+)</span>.*?ipc-rating-star--maxRating">.*?</span>.*?ipc-rating-star--voteCount">([^<]+)</span>'
+        block_match = re.search(block_pattern, html, re.DOTALL)
+        if block_match:
+            rating = float(block_match.group(1))
+            votes_raw = block_match.group(2)
+            # Limpia el texto de votos: elimina espacios/nbsp y comentarios, deja por ejemplo "9.8k" o "12,345"
+            votes = re.sub(r'\s|&nbsp;|\(|\)', '', votes_raw)
+            votes = re.sub(r'<!--.*?-->', '', votes)
+            votes = votes.strip()
+
+            # Intenta obtener el título a partir del mismo anchor ref_=ttep_ep_{episode}
+            title_match = re.search(rf'ref_=ttep_ep_{episode}[^>]*>\s*(?:S{season}\.E{episode}\s*[^<]*?∙\s*)?([^<]+)\s*</a>', html, re.DOTALL)
+            title = title_match.group(1).strip() if title_match else f"Episode {episode}"
+            app.logger.info("method=direct_scraping status=success")
             return jsonify({
                 "imdb_id": formatted_id,
                 "season": season,
@@ -223,18 +134,59 @@ def get_episode_rating(imdb_id, season, episode):
                 "votes": votes,
                 "title": title,
                 "success": True,
-                "method": "original",
+                "method": "direct_scraping",
                 "error": None
             })
+        
+        # Si no encuentra con rating, buscar solo el episodio para obtener episode_id
+        episode_basic_pattern = rf'S{season}\.E{episode}\s*∙\s*([^<\]]+)'
+        match = re.search(episode_basic_pattern, html, re.DOTALL)
+        if match:
+            title = match.group(1).strip()
+            
+            # Buscar el episode_id en el HTML
+            episode_id_pattern = rf'S{season}\.E{episode}.*?title/(tt\d+)/\?'
+            episode_id_match = re.search(episode_id_pattern, html)
+            
+            if episode_id_match:
+                episode_id = episode_id_match.group(1)
+                app.logger.info(f"method=episode_id_found_in_list episode_id={episode_id}")
+                return jsonify({
+                    "imdb_id": formatted_id,
+                    "season": season,
+                    "episode": episode,
+                    "rating": None,
+                    "success": False,
+                    "method": "episode_id_found_in_list",
+                    "episode_id": episode_id,
+                    "title": title,
+                    "error": f"Episode ID encontrado: {episode_id}. Use endpoint /imdb/{episode_id}/rating para obtener rating."
+                })
         else:
-            return jsonify({
-                "imdb_id": formatted_id,
-                "season": season,
-                "episode": episode,
-                "rating": None,
-                "success": False,
-                "error": f"No se encontró el episodio {episode} de {formatted_id}"
-            })
+            # Si no se encuentra en la lista, usar OMDb como fallback
+            omdb_result = get_episode_id_from_omdb(formatted_id, season, episode)
+            if omdb_result and omdb_result["success"]:
+                app.logger.info(f"method=omdb_episode_id_found episode_id={omdb_result['episode_id']}")
+                return jsonify({
+                    "imdb_id": formatted_id,
+                    "season": season,
+                    "episode": episode,
+                    "rating": None,
+                    "success": False,
+                    "method": "omdb_episode_id_found",
+                    "episode_id": omdb_result["episode_id"],
+                    "title": omdb_result["title"],
+                    "error": f"Episode ID encontrado: {omdb_result['episode_id']}. Use endpoint /imdb/{omdb_result['episode_id']}/rating para obtener rating."
+                })
+            else:
+                return jsonify({
+                    "imdb_id": formatted_id,
+                    "season": season,
+                    "episode": episode,
+                    "rating": None,
+                    "success": False,
+                    "error": f"No se encontró el episodio {episode} (S{season}.E{episode})" if formatted_id != "tt0388629" else f"No se encontró el episodio {episode} de One Piece"
+                })
             
     except Exception as e:
         return jsonify({
@@ -246,5 +198,144 @@ def get_episode_rating(imdb_id, season, episode):
             "error": f"Error interno: {str(e)}"
         }), 500
 
+@app.route('/imdb/<episode_id>/rating')
+def get_individual_episode_rating(episode_id):
+    """Obtener rating de un episodio específico usando su IMDb ID individual"""
+    
+    # Validar ID
+    if not validate_imdb_id(episode_id):
+        return jsonify({
+            "episode_id": episode_id,
+            "rating": None,
+            "success": False,
+            "error": "Episode ID inválido"
+        }), 400
+    
+    formatted_id = format_imdb_id(episode_id)
+    
+    try:
+        # Hacer scraping directo de la página del episodio específico
+        episode_url = f"https://www.imdb.com/title/{formatted_id}/"
+        app.logger.info(f"GET episode page: {formatted_id}")
+        response = requests.get(episode_url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
+        if response.status_code != 200:
+            return jsonify({
+                "episode_id": formatted_id,
+                "rating": None,
+                "success": False,
+                "error": f"No se pudo acceder a la página del episodio {formatted_id}"
+            })
+        
+        html = response.text
+        # Primero, intentar extraer desde JSON-LD (más estable y rápido)
+        try:
+            ld_matches = re.findall(r'<script type="application/ld\+json">(.+?)</script>', html, re.DOTALL)
+            for ld in ld_matches:
+                ld = ld.strip()
+                if not ld:
+                    continue
+                try:
+                    data = json.loads(ld)
+                except Exception:
+                    continue
+                # Puede ser un objeto o una lista de objetos
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    agg = item.get("aggregateRating") or {}
+                    if not agg:
+                        continue
+                    rv = agg.get("ratingValue")
+                    rc = agg.get("ratingCount")
+                    if rv is None:
+                        continue
+                    try:
+                        rating = float(rv)
+                    except Exception:
+                        continue
+                    votes = str(rc) if rc is not None else "0"
+                    title = item.get("name") or "Episode"
+                    app.logger.info("method=individual_episode_scraping source=jsonld status=success")
+                    return jsonify({
+                        "episode_id": formatted_id,
+                        "rating": rating,
+                        "votes": votes,
+                        "title": title,
+                        "success": True,
+                        "method": "individual_episode_scraping",
+                        "error": None
+                    })
+        except Exception:
+            pass
+
+        # Buscar rating en la página del episodio específico
+        rating_patterns = [
+            r'"ratingValue":(\d+\.\d+)',
+            r'ratingValue"[^>]*>(\d+\.\d+)',
+            r'(\d+\.\d+)</span>.*?based on.*?(\d+).*?user rating',
+            r'(\d+\.\d+)/10.*?(\d+).*?user ratings'
+        ]
+        
+        for pattern in rating_patterns:
+            rating_match = re.search(pattern, html, re.DOTALL)
+            if rating_match:
+                rating = float(rating_match.group(1))
+                
+                # Buscar votos
+                votes_patterns = [
+                    r'"ratingCount":(\d+)',
+                    r'ratingCount"[^>]*>(\d+)',
+                    r'based on.*?(\d+).*?user rating',
+                    r'(\d+).*?user ratings'
+                ]
+                
+                votes = "0"
+                for votes_pattern in votes_patterns:
+                    votes_match = re.search(votes_pattern, html, re.DOTALL)
+                    if votes_match:
+                        votes = votes_match.group(1)
+                        break
+                
+                # Buscar título del episodio
+                title_patterns = [
+                    r'<h1[^>]*>([^<]+)</h1>',
+                    r'"name":"([^"]+)"',
+                    r'<title>([^<]+)</title>'
+                ]
+                
+                title = "Episode"
+                for title_pattern in title_patterns:
+                    title_match = re.search(title_pattern, html, re.DOTALL)
+                    if title_match:
+                        title = title_match.group(1).strip()
+                        break
+                
+                return jsonify({
+                    "episode_id": formatted_id,
+                    "rating": rating,
+                    "votes": votes,
+                    "title": title,
+                    "success": True,
+                    "method": "individual_episode_scraping",
+                    "error": None
+                })
+        
+        return jsonify({
+            "episode_id": formatted_id,
+            "rating": None,
+            "success": False,
+            "error": f"No se encontró rating en la página del episodio {formatted_id}"
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "episode_id": formatted_id,
+            "rating": None,
+            "success": False,
+            "error": f"Error interno: {str(e)}"
+        }), 500
+
 # Para Vercel - esto es clave para que funcione
-app = app
+if __name__ == "__main__":
+    app.run(debug=False)
