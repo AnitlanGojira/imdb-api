@@ -352,6 +352,7 @@ def get_episode_rating(imdb_id, season, episode):
                 "episode": episode,
                 "rating": None,
                 "success": False,
+                "method": "omdb_episode_id_not_found",
                 "error": f"No se encontró el episodio {episode} (S{season}.E{episode})" if formatted_id != "tt0388629" else f"No se encontró el episodio {episode} de One Piece"
             })
             
