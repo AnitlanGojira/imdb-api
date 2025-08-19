@@ -114,6 +114,9 @@ def scrape_individual_episode(episode_id):
             if vm:
                 votes = vm.group(1)
                 break
+        # Asegurar valor por defecto cuando no se detecten votos
+        if not votes or not str(votes).strip():
+            votes = "0"
 
         # Título
         title_patterns = [
@@ -276,6 +279,9 @@ def get_episode_rating(imdb_id, season, episode):
                         votes = re.sub(r'<!--.*?-->', '', votes)
                         votes = votes.strip()
                         break
+                # Asegurar valor por defecto cuando no se detecten votos
+                if not votes or not str(votes).strip():
+                    votes = "0"
 
                 # Título desde el anchor
                 title_match = re.search(rf'ref_=ttep_ep_{episode}[^>]*>\s*(?:S{season}\.E{episode}\s*[^<]*?∙\s*)?([^<]+)\s*</a>', snippet, re.DOTALL)
